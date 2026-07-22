@@ -1,0 +1,195 @@
+// Kaizen Continuous Improvement Platform — database schema
+// Run `npx prisma migrate dev` after setting DATABASE_URL in .env
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  MEMBER
+  ADMIN
+}
+
+enum UserStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+enum IdeaStatus {
+  SUBMITTED
+  UNDER_REVIEW
+  IN_PROGRESS
+  IMPLEMENTED
+  REJECTED
+  CLOSED
+}
+
+enum VoteValue {
+  UP
+  DOWN
+}
+
+model Department {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+
+  users User[]
+  ideas Idea[]
+}
+
+model Category {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+
+  ideas Idea[]
+}
+
+model User {
+  id              String     @id @default(uuid())
+  name            String
+  email           String     @unique
+  passwordHash    String
+  role            Role       @default(MEMBER)
+  status          UserStatus @default(PENDING)
+  rejectionReason String?
+  departmentId    String?
+  department      Department? @relation(fields: [departmentId], references: [id])
+  createdAt       DateTime   @default(now())
+  approvedAt      DateTime?
+
+  // Only populated for NON-anonymous content. Anonymous ideas/comments
+  // never set authorId, by design — see README "Anonymity model".
+  ideas     Idea[]     @relation("AuthoredIdeas")
+  comments  Comment[]  @relation("AuthoredComments")
+  votes     Vote[]
+  auditLogs AuditLog[] @relation("ActorAuditLogs")
+
+  @@index([status])
+}
+
+model Idea {
+  id   String @id @default(uuid())
+  title       String
+  description String
+
+  // Structured Kaizen template fields (PDCA-style). Optional so a quick
+  // idea isn't blocked, but encouraged in the UI.
+  rootCause        String?
+  proposedSolution String?
+  expectedBenefit  String?
+
+  isAnonymous Boolean @default(false)
+
+  // Null for anonymous ideas — there is intentionally no stored link
+  // between an anonymous idea and the user who created it.
+  authorId String?
+  author   User?   @relation("AuthoredIdeas", fields: [authorId], references: [id])
+
+  // For anonymous ideas only: a bcrypt hash of a one-time secret shown to
+  // the submitter at creation. Possessing the raw secret is the ONLY way
+  // to edit/withdraw the idea later. Nobody, including admins, can reverse
+  // this hash back to a user identity.
+  anonymousEditTokenHash String?
+
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
+
+  categoryId String?
+  category   Category? @relation(fields: [categoryId], references: [id])
+
+  status        IdeaStatus @default(SUBMITTED)
+  adminResponse String?
+  score         Int        @default(0)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  closedAt  DateTime?
+
+  comments Comment[]
+  votes    Vote[]
+  attachments Attachment[]
+
+  @@index([status])
+  @@index([departmentId])
+  @@index([categoryId])
+}
+
+model Comment {
+  id     String @id @default(uuid())
+  ideaId String
+  idea   Idea   @relation(fields: [ideaId], references: [id], onDelete: Cascade)
+
+  parentId String?
+  parent   Comment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies  Comment[] @relation("CommentReplies")
+
+  isAnonymous Boolean @default(false)
+
+  authorId String?
+  author   User?   @relation("AuthoredComments", fields: [authorId], references: [id])
+
+  // Same pattern as Idea.anonymousEditTokenHash, scoped to deletion only.
+  anonymousDeleteTokenHash String?
+
+  body      String
+  isHidden  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  attachments Attachment[]
+
+  @@index([ideaId])
+}
+
+model Vote {
+  id        String    @id @default(uuid())
+  ideaId    String
+  idea      Idea      @relation(fields: [ideaId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  value     VoteValue
+  createdAt DateTime  @default(now())
+
+  // Voting itself is never anonymous (one vote per person is enforced
+  // against their account) — only idea/comment AUTHORSHIP can be anonymous.
+  @@unique([ideaId, userId])
+}
+
+model Attachment {
+  id        String   @id @default(uuid())
+  // Original filename shown to users
+  filename  String
+  // UUID-based name actually written to disk — never guessable from filename
+  storedAs  String   @unique
+  mimetype  String
+  size      Int
+
+  ideaId    String?
+  idea      Idea?    @relation(fields: [ideaId], references: [id], onDelete: Cascade)
+  commentId String?
+  comment   Comment? @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@index([ideaId])
+  @@index([commentId])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String
+  actor      User     @relation("ActorAuditLogs", fields: [actorId], references: [id])
+  action     String
+  targetType String
+  targetId   String
+  details    String?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+}
